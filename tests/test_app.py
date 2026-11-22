@@ -261,6 +261,19 @@ def test_public_telegram_scan_and_dedup():
             assert scan_telegram_web(db, source) == 0
             assert cls.return_value.__enter__.return_value.get.call_args.args == ("https://t.me/s/akenaivpn",)
         assert db.scalar(select(func.count(FeedItem.id)).where(FeedItem.source_id == original_source_id, FeedItem.external_id == "500")) == 1
+        # A public channel may have no posts from the past week. On the first
+        # scan, older visible posts must still be collected with their real dates.
+        old_date = (utcnow() - timedelta(days=90)).replace(microsecond=0)
+        old_html = (f'<div class="tgme_widget_message" data-post="akenaivpn/501">'
+                    f'<div class="tgme_widget_message_text">Старый материал про VPN и проблемы подключения к сервисам.</div>'
+                    f'<a class="tgme_widget_message_date"><time datetime="{old_date.isoformat()}Z">old</time></a></div>').encode()
+        fake.content = old_html
+        with patch("app.logic.httpx.Client") as cls:
+            cls.return_value.__enter__.return_value.get.return_value = fake
+            assert scan_telegram_web(db, source) == 1
+            assert scan_telegram_web(db, source) == 0
+        older = db.scalar(select(FeedItem).where(FeedItem.source_id == original_source_id, FeedItem.external_id == "501"))
+        assert older and older.published_at == old_date
         source.last_checked = utcnow()
         db.commit()
         with patch("app.logic.scan_telegram_web") as scan:
