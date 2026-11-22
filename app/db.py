@@ -40,7 +40,7 @@ class Setting(Base):
 class Source(Base):
     __tablename__ = "sources"
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(20))  # rss, telegram
+    kind: Mapped[str] = mapped_column(String(20))  # rss, telegram, telegram_web
     title: Mapped[str] = mapped_column(String(200))
     address: Mapped[str] = mapped_column(String(900))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -125,3 +125,14 @@ def initialize_database():
     if "archived" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE sources ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE"))
+    # Seed the channel explicitly requested for this deployment just once.
+    # Deleting it in the UI must not silently recreate it after an update.
+    with SessionLocal() as db:
+        if db.get(Setting, "seed_akenaivpn_v1") is None:
+            exists = db.query(Source.id).filter(Source.kind == "telegram_web",
+                                                  Source.address == "https://t.me/s/akenaivpn").first()
+            if not exists:
+                db.add(Source(kind="telegram_web", title="AkenAI VPN",
+                              address="https://t.me/s/akenaivpn"))
+            db.add(Setting(key="seed_akenaivpn_v1", value="1"))
+            db.commit()

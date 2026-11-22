@@ -8,9 +8,16 @@
   const help = document.getElementById('source-help');
   if (kind && address && help) {
     const update = () => {
-      const tg = kind.value === 'telegram';
-      address.placeholder = tg ? '@channelname или -100...' : 'https://example.com/feed.xml';
-      help.textContent = tg ? 'Telegram: бот должен быть администратором разрешённого канала. Историю старых постов бот не видит.' : 'RSS загружается автоматически, не чаще выбранного интервала.';
+      if (kind.value === 'telegram_web') {
+        address.placeholder = 'https://t.me/s/akenaivpn';
+        help.textContent = 'Публичная страница Telegram без бота. Интервал не менее 30 минут. Для автоматического сбора требуется разрешение на использование контента.';
+      } else if (kind.value === 'telegram') {
+        address.placeholder = '@channelname или -100...';
+        help.textContent = 'Telegram Bot API: бот должен быть администратором разрешённого канала. Старые посты недоступны.';
+      } else {
+        address.placeholder = 'https://example.com/feed.xml';
+        help.textContent = 'RSS загружается автоматически, не чаще выбранного интервала.';
+      }
     };
     kind.addEventListener('change', update); update();
   }

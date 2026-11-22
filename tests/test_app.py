@@ -189,3 +189,104 @@ def test_json_and_rss_safety():
         parse_feed(b'<rss><!DOCTYPE x [ <!ENTITY x "lol"> ]></rss>')
     with pytest.raises(ValueError):
         check_public_feed_url("http://127.0.0.1:7777/secrets")
+
+
+def test_telegram_public_page_parsing_and_url_validation():
+    import pytest
+    from datetime import timedelta
+    from app.db import utcnow
+    from app.telegram_web import normalize_public_channel_url, parse_public_channel
+
+    assert normalize_public_channel_url("https://t.me/s/AkenAIvpn") == "https://t.me/s/akenaivpn"
+    assert normalize_public_channel_url("@akenaivpn") == "https://t.me/s/akenaivpn"
+    assert normalize_public_channel_url("https://t.me/akenaivpn") == "https://t.me/s/akenaivpn"
+    for dangerous in (
+        "http://t.me/s/akenaivpn", "https://t.me.evil.org/s/akenaivpn",
+        "https://t.me/s/akenaivpn/123", "https://t.me/s/akenaivpn?before=40",
+        "https://127.0.0.1/s/channel", "https://t.me@evil.org/s/channel",
+        "https://t.me:8000/s/akenaivpn", "file:///etc/passwd",
+    ):
+        with pytest.raises(ValueError):
+            normalize_public_channel_url(dangerous)
+
+    stamp = utcnow().replace(microsecond=0)
+    date = stamp.isoformat() + "Z"
+    page = f'''<html><body>
+    <div class="tgme_widget_message_wrap"><div class="tgme_widget_message js-widget_message" data-post="akenaivpn/120">
+      <div class="tgme_widget_message_bubble"><div class="tgme_widget_message_text js-message_text">
+        Новости о <b>VPN</b> и интернете: <a href="https://example.com/a">опубликован официальный отчёт</a>.
+        <br>Он содержит подробности о ситуации в регионе.
+      </div><a class="tgme_widget_message_date" href="https://t.me/akenaivpn/120"><time datetime="{date}">17:00</time></a></div>
+    </div></div>
+    <div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="akenaivpn/121">
+      <div class="tgme_widget_message_text js-message_text">Второе сообщение о публичных новостях и работе сервисов связи.</div>
+      <a class="tgme_widget_message_date"><time datetime="{date}">17:10</time></a>
+    </div></div>
+    <div class="tgme_widget_message" data-post="otherchannel/122">
+      <div class="tgme_widget_message_text js-message_text">Сообщение из другого канала, не добавляем.</div>
+      <time datetime="{date}">17:20</time>
+    </div>
+    </body></html>'''.encode()
+    parsed = parse_public_channel(page, "akenaivpn")
+    assert len(parsed) == 2
+    assert {p["external"] for p in parsed} == {"120", "121"}
+    assert all(p["link"].startswith("https://t.me/akenaivpn/") for p in parsed)
+    assert "официальный отчёт" in parsed[0]["body"] or "официальный отчёт" in parsed[1]["body"]
+
+
+def test_public_telegram_scan_and_dedup():
+    from app.db import utcnow, initialize_database, Setting
+    from app.logic import scan_telegram_web, scan_sources
+    from datetime import timedelta
+
+    initialize_database()
+    with SessionLocal() as db:
+        source = db.scalar(select(Source).where(Source.kind == "telegram_web", Source.address == "https://t.me/s/akenaivpn"))
+        assert source and source.active
+        original_source_id = source.id
+        # Re-initialization must not duplicate the requested default channel.
+        initialize_database()
+        assert db.scalar(select(func.count(Source.id)).where(Source.kind == "telegram_web", Source.address == source.address)) == 1
+        when = (utcnow() - timedelta(hours=1)).replace(microsecond=0).isoformat() + 'Z'
+        content = (f'<div class="tgme_widget_message" data-post="akenaivpn/500">'
+                   f'<div class="tgme_widget_message_text">Новая публикация о работе VPN и особенностях подключения к интернет-сервисам.</div>'
+                   f'<a class="tgme_widget_message_date"><time datetime="{when}">now</time></a></div>').encode()
+        from unittest.mock import MagicMock
+        fake = MagicMock()
+        fake.content = content
+        fake.raise_for_status.return_value = None
+        with patch("app.logic.httpx.Client") as cls:
+            cls.return_value.__enter__.return_value.get.return_value = fake
+            assert scan_telegram_web(db, source) == 1
+            assert scan_telegram_web(db, source) == 0
+            assert cls.return_value.__enter__.return_value.get.call_args.args == ("https://t.me/s/akenaivpn",)
+        assert db.scalar(select(func.count(FeedItem.id)).where(FeedItem.source_id == original_source_id, FeedItem.external_id == "500")) == 1
+        source.last_checked = utcnow()
+        db.commit()
+        with patch("app.logic.scan_telegram_web") as scan:
+            assert scan_sources(db) == (0, [])
+            scan.assert_not_called()
+
+
+def test_public_source_can_be_added_and_archived():
+    from app.db import initialize_database
+    initialize_database()
+    with TestClient(app) as client:
+        client.post("/login", data={"username": "admin", "password": "super-strong-test-pass"})
+        csrf = get_csrf(client)
+        response = client.post("/sources/add", data={"csrf": csrf, "kind": "telegram_web", "title": "Тестовый источник", "address": "https://t.me/s/test_public_feed"})
+        assert "Источник добавлен" in response.text
+        with SessionLocal() as db:
+            source = db.scalar(select(Source).where(Source.kind == "telegram_web", Source.address == "https://t.me/s/test_public_feed"))
+            assert source and source.active
+            source_id = source.id
+        page = client.get("/?page=sources").text
+        assert "Telegram Web — без бота" in page
+        assert "https://t.me/s/akenaivpn" in page
+        client.post(f"/sources/{source_id}/delete", data={"csrf": csrf})
+        with SessionLocal() as db:
+            assert db.get(Source, source_id).archived
+        with SessionLocal() as db:
+            from app.db import initialize_database
+            initialize_database()
+            assert db.get(Source, source_id).archived

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .db import Source, FeedItem, Topic, Setting, Draft, utcnow
 from .core import get_setting, normalize_channel
+from .telegram_web import normalize_public_channel_url, parse_public_channel
 
 BOT_API = "https://api.telegram.org"
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
@@ -165,14 +166,48 @@ def scan_rss(db: Session, source: Source) -> int:
     return count
 
 
+
+def scan_telegram_web(db: Session, source: Source) -> int:
+    """Fetch the visible public page once; no login or historical pagination."""
+    canonical = normalize_public_channel_url(source.address)
+    channel = canonical.rsplit("/", 1)[-1]
+    with httpx.Client(timeout=20, follow_redirects=False) as client:
+        response = client.get(canonical, headers={
+            "User-Agent": "VPNNewsroom/1.1 (+public-channel-reader)",
+            "Accept": "text/html",
+        })
+        response.raise_for_status()
+        if len(response.content) > 2_000_000:
+            raise ValueError("Страница Telegram слишком большая (макс. 2 МБ)")
+        entries = parse_public_channel(response.content, channel)
+    if not entries:
+        raise ValueError("Публичные посты не найдены: канал недоступен, закрыт или страница изменилась")
+    count = 0
+    now = utcnow()
+    for entry in entries:
+        pub = entry["published"]
+        if pub < now - timedelta(days=7) or pub > now + timedelta(days=1):
+            continue
+        if add_item(db, source_id=source.id, external_id=entry["external"],
+                    title=entry["title"], body=entry["body"],
+                    url=entry["link"], published_at=pub):
+            count += 1
+    source.last_checked, source.last_error = now, ""
+    db.commit()
+    return count
+
+
 def scan_sources(db: Session, force: bool = False) -> tuple[int, list[str]]:
     total, errors = 0, []
     interval = max(5, min(1440, int(get_setting(db, "scan_minutes") or 15)))
-    for source in db.scalars(select(Source).where(Source.kind == "rss", Source.active.is_(True))).all():
-        if not force and source.last_checked and utcnow() - source.last_checked < timedelta(minutes=interval):
+    for source in db.scalars(select(Source).where(Source.kind.in_(["rss", "telegram_web"]),
+                                                  Source.active.is_(True), Source.archived.is_(False))).all():
+        # Public web pages are polled conservatively, never more than once per 30 min.
+        source_interval = max(30, interval) if source.kind == "telegram_web" else interval
+        if not force and source.last_checked and utcnow() - source.last_checked < timedelta(minutes=source_interval):
             continue
         try:
-            total += scan_rss(db, source)
+            total += scan_telegram_web(db, source) if source.kind == "telegram_web" else scan_rss(db, source)
         except Exception as exc:
             source.last_checked, source.last_error = utcnow(), str(exc)[:400]
             db.commit()

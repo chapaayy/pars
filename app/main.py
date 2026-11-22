@@ -22,6 +22,7 @@ from .core import (DATA_DIR, bootstrap_code, check_password, create_session, del
 from .db import (Admin, Draft, FeedItem, Job, LoginSession, Source, Topic, SessionLocal,
                  initialize_database, utcnow)
 from .logic import add_item, check_public_feed_url, publish_draft
+from .telegram_web import normalize_public_channel_url
 
 logger = logging.getLogger("newsroom.app")
 logging.basicConfig(level=logging.INFO)
@@ -223,10 +224,14 @@ async def source_add(request: Request, db: Session = Depends(get_db)):
     csrf, kind, title, address = (form.get(key, "") for key in ("csrf", "kind", "title", "address"))
     csrf_guard(request, csrf)
     try:
-        if kind not in {"rss", "telegram"} or len(title.strip()) < 2 or len(title) > 200:
+        if kind not in {"rss", "telegram", "telegram_web"} or len(title.strip()) < 2 or len(title) > 200:
             raise ValueError("Укажите корректный тип и название")
         if kind == "rss":
             address = check_public_feed_url(address.strip())
+        elif kind == "telegram_web":
+            address = normalize_public_channel_url(address)
+            if address.rsplit("/", 1)[-1] == normalize_channel(get_setting(db, "channel_id")).lstrip("@"):
+                raise ValueError("Собственный канал публикации нельзя добавлять в источники")
         else:
             address = normalize_channel(address)
             if not valid_channel_id(address):

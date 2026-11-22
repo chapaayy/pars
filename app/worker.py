@@ -68,11 +68,11 @@ def worker_tick(db):
     try:
         count, errors = scan_sources(db)
         if count:
-            logger.info("rss: new items=%s", count)
+            logger.info("sources: new items=%s", count)
         for error in errors:
-            logger.warning("rss: %s", error[:200])
+            logger.warning("sources: %s", error[:200])
     except Exception:
-        logger.exception("RSS scan failed")
+        logger.exception("Source scan failed")
     if time.monotonic() >= _next_ai_attempt:
         try:
             if get_setting(db, "ai_api_key"):
