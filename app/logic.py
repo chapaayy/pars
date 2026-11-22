@@ -186,7 +186,11 @@ def scan_telegram_web(db: Session, source: Source) -> int:
     now = utcnow()
     for entry in entries:
         pub = entry["published"]
-        if pub < now - timedelta(days=7) or pub > now + timedelta(days=1):
+        # The public preview can have no posts from the past seven days. Import
+        # its latest visible posts regardless of age, keeping their REAL dates.
+        # add_item() deduplicates by source + stable Telegram post ID, so later
+        # scans only bring in unseen messages, not the same historical posts.
+        if pub > now + timedelta(days=1):
             continue
         if add_item(db, source_id=source.id, external_id=entry["external"],
                     title=entry["title"], body=entry["body"],
