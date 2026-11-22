@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if setup %}Первый запуск{% else %}Вход{% endif %} · VPN Newsroom</title>
+<link rel="stylesheet" href="/static/style.css"></head>
+<body class="auth-body">
+<div class="auth-wrap">
+  <div class="brand-mark">N<span>.</span></div>
+  <h1>{% if setup %}Первый запуск{% else %}С возвращением{% endif %}</h1>
+  <p class="muted">VPN Newsroom · твой ИИ-редактор новостей</p>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <form method="post" action="{% if setup %}/setup{% else %}/login{% endif %}" class="form-stack">
+    {% if setup %}
+      <label>Код первого запуска <small>Узнать: <code>./logs.sh</code></small>
+        <input type="text" name="code" autocomplete="off" placeholder="Код из логов контейнера" required></label>
+    {% endif %}
+    <label>Логин<input name="username" autocomplete="username" minlength="3" maxlength="40" required placeholder="admin"></label>
+    <label>Пароль<input name="password" type="password" autocomplete="{% if setup %}new-password{% else %}current-password{% endif %}"
+        minlength="{% if setup %}12{% else %}1{% endif %}" required placeholder="{% if setup %}Минимум 12 символов{% else %}Ваш пароль{% endif %}"></label>
+    <button type="submit" class="btn btn-primary btn-wide">{% if setup %}Создать администратора{% else %}Войти в панель{% endif %} →</button>
+  </form>
+  <p class="auth-foot">Доступ только администратору. HTTPS через Caddy.</p>
+</div></body></html>
